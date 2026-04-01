@@ -304,7 +304,7 @@ def run_agent(df: pd.DataFrame, vs: FAISS) -> None:
 
         tool_calls_made = 0
 
-        for _ in range(4):  # max tool iterations
+        for _ in range(6):  # max tool iterations
             assistant = openrouter_chat(messages).strip()
 
             # Try JSON tool call
@@ -327,7 +327,7 @@ def run_agent(df: pd.DataFrame, vs: FAISS) -> None:
                 # increment tool call count
                 tool_calls_made += 1
 
-                if tool_calls_made >= 3:
+                if tool_calls_made >= 5:
                     messages.append({
                         "role": "user",
                         "content": "Provide a final answer based on the retrieved data. Do not call any more tools."
