@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 # =========================
 # Config
 # =========================
-DATA_PATH = "ATBe_2024_test.csv"  # put in same folder, or change path
+DATA_PATH = "ATBe_2024.csv"  # put in same folder, or change path
+INDEX_PATH = "faiss_index"
 OPENROUTER_MODEL = "stepfun/step-3.5-flash:free"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 load_dotenv()
@@ -24,11 +25,11 @@ load_dotenv()
 # =========================
 def load_dataset(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
+    
     # Drop junk index column if present
     if "Unnamed: 0" in df.columns:
         df = df.drop(columns=["Unnamed: 0"])
     return df
-
 
 def row_to_text(row: pd.Series) -> str:
     """
@@ -58,9 +59,25 @@ def row_to_text(row: pd.Series) -> str:
 
 
 def build_vectorstore(df: pd.DataFrame) -> FAISS:
+
+    # Load existing index if it exists
+    if os.path.exists(INDEX_PATH):
+        print("Loading existing FAISS index from disk...")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
+        vs = FAISS.load_local(INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
+        print("FAISS index loaded successfully.")
+        return vs
+    
+    # Otherwise build index
+    print("Building FAISS index from scratch... (this may take a while)\n")
+
     docs: List[Document] = []
+
     for idx, row in df.iterrows():
         text = row_to_text(row)
+
         metadata = {
             "row_index": int(idx),
             "technology": str(row.get("technology")),
@@ -71,10 +88,19 @@ def build_vectorstore(df: pd.DataFrame) -> FAISS:
             "atb_year": str(row.get("atb_year")),
         }
         docs.append(Document(page_content=text, metadata=metadata))
+        
+        # Progress check of vectorization every 10k rows
+        if (idx + 1) % 10000 == 0:
+            print(f"Processed {idx + 1} rows...")
 
     # HuggingFace embeddings (local model download)
     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
     vs = FAISS.from_documents(docs, embeddings)
+
+    # Saving index locally
+    print("Saving FAISS index to disk...")
+    vs.save_local(INDEX_PATH)
+
     return vs
 
 
@@ -351,5 +377,6 @@ def run_agent(df: pd.DataFrame, vs: FAISS) -> None:
 
 if __name__ == "__main__":
     df = load_dataset(DATA_PATH)
+    print("Loaded dataset into DataFrame")
     vs = build_vectorstore(df)
     run_agent(df, vs)
