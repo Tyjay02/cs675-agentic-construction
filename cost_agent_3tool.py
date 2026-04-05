@@ -22,6 +22,42 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 load_dotenv()
 
 # =========================
+# ATB units lookup (units column is blank in the CSV export;
+# these are the canonical units from the ATB definitions page,
+# all monetary values in 2022 USD)
+# =========================
+UNITS_MAP = {
+    "CAPEX":           "$/kW (2022 USD)",
+    "OCC":             "$/kW (2022 USD)",
+    "GCC":             "$/kW (2022 USD)",
+    "CFC":             "$/kW (2022 USD)",
+    "Fixed O&M":       "$/kW-year (2022 USD)",
+    "Variable O&M":    "$/MWh (2022 USD)",
+    "Capacity Factor": "fraction (0-1)",
+    "LCOE":            "$/MWh (2022 USD)",
+    "FCR":             "fraction (0-1)",
+    "WACC":            "fraction (0-1)",
+    "CRF":             "fraction (0-1)",
+}
+
+def _resolve_units(series: pd.Series, metric: str) -> list:
+    """
+    Return units from the dataframe column when present; fall back to
+    UNITS_MAP keyed on metric name (case-insensitive substring match);
+    final fallback is a pointer to the ATB definitions page.
+    """
+    from_data = series.dropna().unique().tolist()
+    if from_data:
+        return from_data
+ 
+    metric_lower = metric.lower().strip()
+    for key, unit in UNITS_MAP.items():
+        if key.lower() in metric_lower or metric_lower in key.lower():
+            return [unit]
+ 
+    return ["see https://atb.nrel.gov/electricity/2024/definitions"]
+
+# =========================
 # Utilities: dataset -> docs
 # =========================
 def load_dataset(path: str) -> pd.DataFrame:
@@ -193,10 +229,12 @@ def tool_estimate(df: pd.DataFrame, req: EstimateRequest) -> Dict[str, Any]:
         "mean": float(sub["value_num"].mean()),
         "min": float(sub["value_num"].min()),
         "max": float(sub["value_num"].max()),
-        "units": sub["units"].dropna().unique().tolist(),
+        "units": _resolve_units(sub["units"], req.metric),
         "examples": [],
     }
+    resolved_units = estimate["units"][0] if estimate["units"] else "unknown"
     for _, r in sub.head(5).iterrows():
+        row_units = r.get("units")
         estimate["examples"].append({
             "display_name": r.get("display_name"),
             "technology": r.get("technology"),
@@ -206,7 +244,7 @@ def tool_estimate(df: pd.DataFrame, req: EstimateRequest) -> Dict[str, Any]:
             "core_metric_case": r.get("core_metric_case"),
             "tax_credit_case": r.get("tax_credit_case"),
             "value": float(r.get("value_num")),
-            "units": r.get("units"),
+            "units": row_units if pd.notna(row_units) else resolved_units,
         })
     return estimate
 
@@ -259,7 +297,7 @@ def tool_forecast(df: pd.DataFrame, req: ForecastRequest) -> Dict[str, Any]:
          "fitted": round(float(np.polyval(coeffs, yr)), 4)}
         for yr in sample_years[:10]          # cap at 10 rows for brevity
     ]
- 
+
     return {
         "target_year": req.target_year,
         "projected_value": round(projection, 4),
@@ -269,7 +307,7 @@ def tool_forecast(df: pd.DataFrame, req: ForecastRequest) -> Dict[str, Any]:
         "data_points_used": int(len(sub)),
         "years_range": [int(x.min()), last_data_year],
         "extrapolation_gap_years": extrapolation_gap,
-        "units": sub["units"].dropna().unique().tolist(),
+        "units": _resolve_units(sub["units"], req.metric),
         "fit_table": fit_table,
         "note": (
             f"Linear extrapolation {extrapolation_gap} year(s) beyond last data point ({last_data_year}). "
@@ -397,20 +435,31 @@ def run_agent(df: pd.DataFrame, vs: FAISS) -> None:
 
         tool_calls_made = 0
 
-        for _ in range(6):  # max tool iterations
+        for iteration in range(6):  # max tool iterations
+            
             assistant = openrouter_chat(messages).strip()
 
-            # Try JSON tool call
+            # 1) Strip markdown fences the model sometimes wraps JSON in
+            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", assistant.strip(), flags=re.DOTALL).strip()
+ 
+            tool_call = None
             try:
-                tool_call = json.loads(assistant)
-            except:
-                tool_call = None
-
-            # Try XML tool call
+                tool_call = json.loads(cleaned)
+            except Exception:
+                pass
+ 
+            # 2) XML fallback (some models use <tool_call> syntax)
             if tool_call is None:
-                print("XML tool call")
                 tool_call = parse_xml_tool_call(assistant)
-                print(tool_call)
+ 
+            #  Log every LLM turn clearly 
+            if isinstance(tool_call, dict) and "tool" in tool_call:
+                print(f"\n[Tool call] {json.dumps(tool_call, indent=2)}\n")
+            else:
+                # Show raw model text on non-final intermediate turns
+                if iteration > 0:
+
+                    print(f"[Model raw]: {assistant[:200]}{'...' if len(assistant) > 200 else ''}\n")
 
             # If a tool was requested
             if isinstance(tool_call, dict) and "tool" in tool_call:
@@ -441,6 +490,10 @@ def run_agent(df: pd.DataFrame, vs: FAISS) -> None:
  
                 else:
                     result = {"error": f"Unknown tool: '{tool}'. Valid tools: retrieve, estimate, forecast."}
+
+                result_json = json.dumps(result)
+                truncated = result_json[:50] + ("..." if len(result_json) > 50 else "")
+                print(f"[Tool result] ({tool}): {truncated}\n")
  
                 messages.append({"role": "assistant", "content": assistant})
                 messages = messages[-12:]
