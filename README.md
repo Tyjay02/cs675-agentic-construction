@@ -1,14 +1,19 @@
 # cs675-agentic-construction
-We are planning on developing a resource management agent that can take cost/resource inputs and produce plans for future developments, for example in power infrastructure or construction developments.
+This agent is designed to query through the NREL Annual Technology baseline (ATB) 2024 dataset (~570k rows) using natural language to provide data-backed responses from the dataset. 
 
-To run the draft1 file initally you will have to downgrade to python 3.13. You will also have to generate your own API key for OpenRouter and declare it in
-your $env. 
+Dataset was acquired here: https://data.openei.org/submissions/6006
 
-We choose OpenRouter LLM for its wide variety of model options. draft1 currently uses HuggingFaceEmbedddings because it was a free option. This could be improved
-once we have a basic working proof of concept. 1build API has been causing issues, so we are currently looking into other API calls/ datasets aswell for the 
-construction cost. 
+It currently has three tools implemented: Retrieve, Estimate, and Forecast.
 
-To use a virtual environment to run this project (on Windows):
+Retrieve: Semantically search over the FAISS index –used when the query is vague or agent needs to explore available metrics.
+Estimate: Filters the DataFrame by technology, metric, scenario, and year, then returns summary statistics for a point-in-time lookup
+Forecast: Fits a linear trend across all historical metric-years for a given slice and projects to target year, reporting R squared and extrapolation distance.
+
+You will have to generate your own API key for OpenRouter and declare it in your $env. 
+
+We choose OpenRouter LLM for its wide variety of model options. The most updated program is cost_agent_3tool.
+
+As a reminder, to use a virtual environment to run this project (on Windows):
 1. Check that Python 3 is installed:
     python --version
         You should see something like Python 3.x.x
